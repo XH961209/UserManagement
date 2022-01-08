@@ -85,20 +85,41 @@ def login():
         return "登录成功！"
 
 
-def update_password(name, old_passwd, new_passwd):
+def update_passwd_request_is_valid(update_passwd_request):
+    # TODO:新旧密码不能相同
+    return ("name" in update_passwd_request.json) and \
+           ("old_password" in update_passwd_request.json) and \
+           ("new_password" in update_passwd_request.json)
+
+
+@app.route('/user/api/update_password', methods=['POST'])
+def update_password():
     """
     更新用户密码
-    :param name: 用户名
-    :param old_passwd: 旧密码
-    :param new_passwd: 新密码
-    :return:
     """
+    if not update_passwd_request_is_valid(request):
+        abort(400)
+
     # TODO:去redis中查找该用户密码，验证用户输入的旧密码是否正确
     #      如果旧密码正确，则更新用户的密码为新密码，同时将更新密码这一事件写入kafka，任务管理系统会从kafka中读取该事件
-    #      验证密码的过程中，可以知道该用户是普通用户还是员工，更新密码事件需要包含这一信息，从而让任务管理系统更方便地进行查询
     #      kafka server应当事先建立一个名为user-task并且只包含一个partition的topic，用于传递用户管理系统和任务管理系统之间的消息
-    #      消息格式为MSG_UPDATE_PASSWORD
-    #      消息构造示例：MSG_UPDATE_PASSWORD.format(name="alice", is_employee="yes")
+    name = request.json["name"]
+    old_password = request.json["old_password"]
+    new_password = request.json["new_password"]
+    expected_password = redis_client.hget(name=name, key="password")
+    if expected_password is not None:
+        expected_password = expected_password.decode()
+    if expected_password is None:
+        return "用户不存在！"
+    elif expected_password != old_password:
+        return "旧密码输入错误！"
+    else:
+        redis_client.hset(name=name, key="password", value=new_password)
+        # 发送消息到kafka，通知任务管理系统该用户更新了密码
+        msg_update_passwd = MSG_UPDATE_PASSWORD.format(name=name).encode()
+        kafka_producer.send(USER_TASK_TOPIC, value=msg_update_passwd)
+        time.sleep(0.1)
+        return "成功更新密码！"
 
 
 def consume_kafka():
