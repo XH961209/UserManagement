@@ -1,39 +1,88 @@
+import time
+import threading
+from flask import Flask
+from flask import request
+from flask import abort
+from flask import jsonify
+from common import MSG_NEW_USER
+from common import MSG_UPDATE_PASSWORD
+from common import USER_TASK_TOPIC
 from myredis.client import redis_client
 from mykafka.consumer import kafka_consumer
 from mykafka.producer import kafka_producer
 
 
-MSG_NEW_USER = "new user|{name}|{password}|{number}|{department}"
-MSG_UPDATE_PASSWORD = "update password|{name}|{is_employee}"
+app = Flask(__name__)
 
 
-def register(name, password, number=None, department=None):
+def on_send_success(record_metadata, result):
+    result['success'] = True
+    result['debug_info'] = "Successfully send message to topic {}, partition {}, offset {}".\
+        format(record_metadata.topic, record_metadata.partition, record_metadata.offset)
+
+
+def on_send_fail(e, result):
+    result['success'] = False
+    result['info'] = "Fail to send message with error {}".format(e)
+
+
+def register(name, department, password):
     """
     注册一个新用户
     :param name: 用户名
+    :param department: 部门
     :param password: 密码
-    :param number: 如果该用户是员工，number表示工号，否则number为None
-    :param department: 如果该用户是员工，department表示部门，否则department为None
     :return: None
     """
-    # TODO:将用户信息写入redis
-    #      员工和普通用户的信息要分别存储在两个不同数据库
+    # 将用户信息写入redis
+    key = name
+    value = {
+        "department": department,
+        "password": password
+    }
+    redis_client.hset(name=key, mapping=value)
 
-    # TODO:将注册新用户这一事件写入kafka，任务管理系统会从kafka中读取该事件
-    #      kafka server应当事先建立一个名为user-task并且只包含一个partition的topic，用于传递用户管理系统和任务管理系统之间的消息
-    #      消息格式为MSG_NEW_USER
-    #      消息构造示例：MSG_NEW_USER.format(name="alice", password="123456", number="#", department="#")
+    # 将注册新用户这一事件写入kafka，任务管理系统会从kafka中读取该事件
+    # kafka server应当事先建立一个名为user-task并且只包含一个partition的topic，用于传递用户管理系统和任务管理系统之间的消息
+    result = {
+        "success": False,
+        "debug_info": ""
+    }
+    msg_new_user = MSG_NEW_USER.format(name=name, department=department).encode()
+    kafka_producer.send(USER_TASK_TOPIC, msg_new_user).\
+        add_callback(on_send_success, result=result).\
+        add_errback(on_send_fail, result=result)
+    time.sleep(0.1)
+
+    return result
 
 
-def login(name, password):
+def login_request_is_valid(login_request):
+    return ("name" in login_request.json) and ("password" in login_request.json)
+
+
+@app.route('/user/api/login', methods=['POST'])
+def login():
     """
     用户登录
-    :param name: 用户名
-    :param password: 密码
-    :return: 登录成功返回True，失败返回False
     """
-    # TODO:去redis中查找该用户密码，验证用户输入的密码是否正确
-    #      正确则返回True，否则返回False
+    if not login_request_is_valid(request):
+        abort(400)
+
+    # 去redis中查找该用户密码，验证用户输入的密码是否正确
+    # 正确则返回True，否则返回False
+    name = request.json["name"]
+    password = request.json["password"]
+    expected_password = redis_client.hget(name=name, key="password")
+    # TODO:assert name存在的情况下password一定存在
+    if expected_password is not None:
+        expected_password = expected_password.decode()
+    if expected_password is None:
+        return "该用户不存在！"
+    elif expected_password != password:
+        return "密码错误！"
+    else:
+        return "登录成功！"
 
 
 def update_password(name, old_passwd, new_passwd):
@@ -50,3 +99,30 @@ def update_password(name, old_passwd, new_passwd):
     #      kafka server应当事先建立一个名为user-task并且只包含一个partition的topic，用于传递用户管理系统和任务管理系统之间的消息
     #      消息格式为MSG_UPDATE_PASSWORD
     #      消息构造示例：MSG_UPDATE_PASSWORD.format(name="alice", is_employee="yes")
+
+
+def consume_kafka():
+    """
+    从kafka中消费员工管理系统发来的消息
+    :return:
+    """
+    while True:
+        tp_to_records = kafka_consumer.poll()
+        kafka_consumer.commit()
+        for tp in tp_to_records:
+            records = tp_to_records[tp]
+            for record in records:
+                msg = record.value.decode()
+                msg_slices = msg.split('|')
+                if msg_slices[0] == "new employee":
+                    number = msg_slices[1]
+                    department = msg_slices[3]
+                    password = msg_slices[4]
+                    register(name=number, department=department, password=password)
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    consume_threading = threading.Thread(target=consume_kafka, name="ConsumeThreading")
+    consume_threading.start()
+    app.run(port=5001)
