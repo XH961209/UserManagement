@@ -26,17 +26,19 @@ def on_send_fail(e, result):
     result['info'] = "Fail to send message with error {}".format(e)
 
 
-def register(name, department, password):
+def register(number, name, department, password):
     """
     注册一个新用户
+    :param number: 工号
     :param name: 用户名
     :param department: 部门
     :param password: 密码
     :return: None
     """
     # 将用户信息写入redis
-    key = name
+    key = number
     value = {
+        "name": name,
         "department": department,
         "password": password
     }
@@ -48,7 +50,7 @@ def register(name, department, password):
         "success": False,
         "debug_info": ""
     }
-    msg_new_user = MSG_NEW_USER.format(name=name, department=department).encode()
+    msg_new_user = MSG_NEW_USER.format(number=number, name=name, department=department).encode()
     kafka_producer.send(USER_TASK_TOPIC, msg_new_user).\
         add_callback(on_send_success, result=result).\
         add_errback(on_send_fail, result=result)
@@ -137,9 +139,10 @@ def consume_kafka():
                 msg_slices = msg.split('|')
                 if msg_slices[0] == "new employee":
                     number = msg_slices[1]
+                    name = msg_slices[2]
                     department = msg_slices[3]
                     password = msg_slices[4]
-                    register(name=number, department=department, password=password)
+                    register(number=number, name=name, department=department, password=password)
         time.sleep(1)
 
 
