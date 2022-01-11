@@ -3,8 +3,6 @@ import threading
 from flask import Flask
 from flask import request
 from flask import abort
-from flask import jsonify
-import redis
 from common import MSG_NEW_USER, MSG_UPDATE_DEPARTMENT
 from common import MSG_UPDATE_PASSWORD
 from common import USER_TASK_TOPIC
@@ -205,4 +203,4 @@ def consume_kafka():
 if __name__ == "__main__":
     consume_threading = threading.Thread(target=consume_kafka, name="ConsumeThreading")
     consume_threading.start()
-    app.run(port=5001)
+    app.run(host="0.0.0.0")
