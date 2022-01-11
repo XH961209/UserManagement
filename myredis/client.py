@@ -1,3 +1,3 @@
 import redis
 
-redis_client = redis.Redis(db=1)
+redis_client = redis.Redis()
